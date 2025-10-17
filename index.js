@@ -4,20 +4,43 @@ const express=require("express");
 const mongoose = require('mongoose');
 const bodyParser = require('body-parser');
 const cors = require('cors');
+const bcrypt = require('bcryptjs');
+const jwt = require('jsonwebtoken');
+const path = require('path');
 
 const {HoldingsModel}=require("./model/HoldingsModel");
 
 const { PositionsModel } = require("./model/PositionsModel");
 const { OrdersModel } = require("./model/OrdersModel");
+const { UserModel } = require("./model/UserModel");
 
 const PORT = process.env.PORT || 3002;
 const uri = process.env.MONGO_URL;
+
+// Middleware to verify JWT
+const verifyToken = (req, res, next) => {
+    const token = req.header('Authorization')?.replace('Bearer ', '');
+    if (!token) {
+        return res.status(401).json({ message: 'Access denied' });
+    }
+    try {
+        const decoded = jwt.verify(token, process.env.JWT_SECRET);
+        req.user = decoded;
+        next();
+    } catch (error) {
+        res.status(400).json({ message: 'Invalid token' });
+    }
+};
 
 const app = express(); 
 
 app.use(cors());
 app.use(bodyParser.json());
- //create application
+
+const buildPath = path.join(__dirname, '..', 'frontend', 'build');
+if (process.env.NODE_ENV === 'production') {
+    app.use(express.static(buildPath));
+}
 
 // app.get("/addHoldings",async(req,res)=>{
 //     let tempHoldings=[
@@ -138,7 +161,7 @@ app.use(bodyParser.json());
 //         qty:item.qty,
 //         avg:item.avg,
 //         price:item.price,
-//         net:item.price,
+//         net:item.net,
 //         day:item.day,
 //     });
 //     newHolding.save();
@@ -211,6 +234,59 @@ app.post("/newOrder",async(req,res)=>{
 
     res.send("Order Saved!");
 });
+
+// Signup route
+app.post("/signup", async (req, res) => {
+    try {
+        const { name, email, password } = req.body;
+        // Check if user already exists
+        const existingUser = await UserModel.findOne({ email });
+        if (existingUser) {
+            return res.status(400).json({ message: "User already exists" });
+        }
+        // Hash password
+        const hashedPassword = await bcrypt.hash(password, 10);
+        // Create new user
+        const newUser = new UserModel({
+            name,
+            email,
+            password: hashedPassword
+        });
+        await newUser.save();
+        res.status(201).json({ message: "User created successfully" });
+    } catch (error) {
+        res.status(500).json({ message: "Server error", error: error.message });
+    }
+});
+// Login route
+app.post("/login", async (req, res) => {
+    try {
+        const { email, password } = req.body;
+        // Find user
+        const user = await UserModel.findOne({ email });
+        if (!user) {
+            return res.status(400).json({ message: "Invalid credentials" });
+        }
+        // Check password
+        const isPasswordValid = await bcrypt.compare(password, user.password);
+        if (!isPasswordValid) {
+            return res.status(400).json({ message: "Invalid credentials" });
+        }
+        // Generate JWT token
+        const token = jwt.sign({ userId: user._id, email: user.email }, process.env.JWT_SECRET, {
+            expiresIn: '1h'
+        });
+        res.json({ message: "Login successful", token, user: { name: user.name, email: user.email } });
+    } catch (error) {
+        res.status(500).json({ message: "Server error", error: error.message });
+    }
+});
+
+if (process.env.NODE_ENV === 'production') {
+    app.get('*', (req, res) => {
+        res.sendFile(path.join(buildPath, 'index.html'));
+    });
+}
 
 app.listen(PORT, () => {
     console.log("App started!");
